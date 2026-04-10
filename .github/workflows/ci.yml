@@ -153,7 +153,7 @@ jobs:
       - name: Checkout CD repo
         uses: actions/checkout@v4
         with:
-          repository: HARSHITHGOWDA45/3-Tier-GitOps-CD
+          repository: HARSHITHGOWDA45/3-Tier-GitOps-CD-
           token: ${{ secrets.CD_REPO_TOKEN }}
           path: cd
 
