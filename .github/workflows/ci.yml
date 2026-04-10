@@ -1,0 +1,181 @@
+name: 3-Tier DevSecOps CI Pipeline
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+
+# -----------------------------
+# 1. CODE VALIDATION
+# -----------------------------
+  compile:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Frontend Syntax Check
+        run: |
+          cd client
+          find . -name "*.js" -exec node --check {} +
+
+      - name: Backend Syntax Check
+        run: |
+          cd api
+          find . -name "*.js" -exec node --check {} +
+
+# -----------------------------
+# 2. SECRET SCAN (GITLEAKS)
+# -----------------------------
+  gitleaks:
+    runs-on: ubuntu-latest
+    needs: compile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+
+# -----------------------------
+# 3. FILE SYSTEM SCAN (TRIVY)
+# -----------------------------
+  trivy_fs:
+    runs-on: ubuntu-latest
+    needs: gitleaks
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy FS Scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+
+# -----------------------------
+# 4. BUILD & PUSH BACKEND IMAGE
+# -----------------------------
+  backend:
+    runs-on: ubuntu-latest
+    needs: trivy_fs
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker Login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Build & Push Backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./api
+          file: ./api/Dockerfile
+          push: true
+          tags: |
+            harshithgowda45/backend:latest
+            harshithgowda45/backend:${{ env.IMAGE_TAG }}
+
+# -----------------------------
+# 5. BUILD & PUSH FRONTEND IMAGE
+# -----------------------------
+  frontend:
+    runs-on: ubuntu-latest
+    needs: trivy_fs
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker Login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Build & Push Frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./client
+          file: ./client/Dockerfile
+          push: true
+          tags: |
+            harshithgowda45/frontend:latest
+            harshithgowda45/frontend:${{ env.IMAGE_TAG }}
+
+# -----------------------------
+# 6. IMAGE SCAN (TRIVY)
+# -----------------------------
+  trivy_image:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+
+    steps:
+      - name: Scan Backend Image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: harshithgowda45/backend:${{ env.IMAGE_TAG }}
+
+      - name: Scan Frontend Image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: harshithgowda45/frontend:${{ env.IMAGE_TAG }}
+
+# -----------------------------
+# 7. UPDATE CD REPO (GITOPS)
+# -----------------------------
+  update_cd:
+    runs-on: ubuntu-latest
+    needs: trivy_image
+
+    steps:
+      - name: Checkout CD repo
+        uses: actions/checkout@v4
+        with:
+          repository: HARSHITHGOWDA45/3-Tier-GitOps-CD
+          token: ${{ secrets.CD_REPO_TOKEN }}
+          path: cd
+
+      - name: Install yq
+        run: |
+          curl -sL https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 -o yq
+          sudo mv yq /usr/local/bin/
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Update image tags
+        run: |
+          cd cd
+
+          yq -i '
+            (.spec.template.spec.containers[] | select(.name=="backend") | .image)
+            = "harshithgowda45/backend:" + strenv(IMAGE_TAG)
+          ' k8s/backend.yaml
+
+          yq -i '
+            (.spec.template.spec.containers[] | select(.name=="frontend") | .image)
+            = "harshithgowda45/frontend:" + strenv(IMAGE_TAG)
+          ' k8s/frontend.yaml
+
+      - name: Commit & Push
+        run: |
+          cd cd
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git add .
+          git commit -m "Update images ${IMAGE_TAG}" || echo "No changes"
+          git push
