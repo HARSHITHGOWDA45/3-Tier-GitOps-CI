@@ -171,12 +171,12 @@ jobs:
           yq -i '
             (.spec.template.spec.containers[] | select(.name=="backend") | .image)
             = "harshithgowda45/backend:" + strenv(IMAGE_TAG)
-          ' k8s/backend.yaml
+          ' k8s-prod/backend.yaml
 
           yq -i '
             (.spec.template.spec.containers[] | select(.name=="frontend") | .image)
             = "harshithgowda45/frontend:" + strenv(IMAGE_TAG)
-          ' k8s/frontend.yaml
+          ' k8s-prod/frontend.yaml
 
       - name: Commit & Push
         run: |
